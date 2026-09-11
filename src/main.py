@@ -164,6 +164,7 @@ def main():
     parser.add_argument("--classes", type=str, default="models/classes.json", help="Path to classes.json file")
     parser.add_argument("--source", type=str, default="0", help="Video source: USB camera index (0), video file path, or 'synthetic'")
     parser.add_argument("--conf", type=float, default=0.4, help="Confidence threshold (0.0 - 1.0)")
+    parser.add_argument("--fps-limit", type=float, default=0.0, help="Limit detection rate to target FPS (e.g. 1.0 for 1 FPS detection)")
     parser.add_argument("--device-id", type=str, default="rpi5-camera-01", help="Device identifier string")
     parser.add_argument("--fc-port", type=str, default="", help="Flight Controller serial/MAVLink port")
     parser.add_argument("--json-output", type=str, default="output/detections.jsonl", help="File path to save JSON output")
@@ -223,8 +224,13 @@ def main():
 
     frame_count = 0
     fps = 0.0
+    last_inference_time = 0.0
+    detection_interval = (1.0 / args.fps_limit) if args.fps_limit > 0 else 0.0
 
-    logger.info("Starting detection loop. Press 'q' or Ctrl+C to exit.")
+    last_detections = []
+    last_annotated_frame = None
+
+    logger.info(f"Starting detection loop. Target Detection Rate: {'Max' if args.fps_limit <= 0 else f'{args.fps_limit} FPS'}. Press 'q' to exit.")
     json_file = open(args.json_output, "a") if args.json_output else None
 
     try:
@@ -240,10 +246,27 @@ def main():
                     logger.info("End of video stream or camera disconnected.")
                     break
 
-            # Run Pure ONNX Inference
-            detections, annotated_frame = engine.predict(frame, conf_threshold=args.conf)
-            
-            # Calculate FPS
+            # Check FPS limit rate threshold
+            now = time.time()
+            if detection_interval == 0.0 or (now - last_inference_time) >= detection_interval:
+                last_detections, last_annotated_frame = engine.predict(frame, conf_threshold=args.conf)
+                last_inference_time = now
+            else:
+                # Use current frame with overlay boxes from latest detection
+                annotated_frame = frame.copy()
+                for det in last_detections:
+                    bbox = det["bbox"]
+                    xmin, ymin, xmax, ymax = bbox["xmin"], bbox["ymin"], bbox["xmax"], bbox["ymax"]
+                    cv2.rectangle(annotated_frame, (xmin, ymin), (xmax, ymax), (0, 255, 0), 2)
+                    label = f"{det['class_name']} {det['confidence']:.2f}"
+                    cv2.putText(annotated_frame, label, (xmin, max(20, ymin - 10)),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                last_annotated_frame = annotated_frame
+
+            detections = last_detections
+            annotated_frame = last_annotated_frame
+
+            # Calculate overall FPS
             loop_time = time.time() - loop_start
             fps = 0.9 * fps + 0.1 * (1.0 / loop_time if loop_time > 0 else 30.0)
 
@@ -289,7 +312,7 @@ def main():
             if show_window:
                 cv2.imshow(window_name, annotated_frame)
                 key = cv2.waitKey(1) & 0xFF
-                if key == ord('q') or key == 27:  # 'q' or ESC key
+                if key == ord('q') or key == 27:
                     logger.info("Quit key pressed.")
                     break
 
