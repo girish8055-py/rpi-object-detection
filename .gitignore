@@ -1,0 +1,21 @@
+# Python & Bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv
+
+# Telemetry logs & generated output
+output/
+*.jsonl
+*.log
+
+# IDE & System
+.vscode/
+.idea/
+.DS_Store
+*.swp
