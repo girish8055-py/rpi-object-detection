@@ -28,18 +28,18 @@ logging.basicConfig(
 )
 logger = logging.getLogger("RPi5-PureONNX-Detection")
 
-# Global frame buffer for Web Streamer
+# Global frame buffer for optional Web Streamer
 latest_encoded_frame = None
 frame_lock = threading.Lock()
 
 
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
-    """Threaded HTTP server for smooth multi-client MJPEG streaming."""
+    """Threaded HTTP server for background web streaming."""
     daemon_threads = True
 
 
 class MJPEGStreamHandler(BaseHTTPRequestHandler):
-    """Streams live detection video frames over HTTP to any web browser."""
+    """Streams live detection video frames over HTTP."""
     def do_GET(self):
         global latest_encoded_frame
         if self.path == '/' or self.path == '/video':
@@ -61,7 +61,7 @@ class MJPEGStreamHandler(BaseHTTPRequestHandler):
                     self.end_headers()
                     self.wfile.write(buf)
                     self.wfile.write(b"\r\n")
-                    time.sleep(0.03)  # ~30 FPS throttle
+                    time.sleep(0.03)
                 except Exception:
                     break
         else:
@@ -69,15 +69,14 @@ class MJPEGStreamHandler(BaseHTTPRequestHandler):
             self.end_headers()
 
     def log_message(self, format, *args):
-        return  # Silence standard HTTP access logs
+        return
 
 
 def start_mjpeg_webserver(port=8080):
-    """Starts background HTTP server for live web browser video streaming."""
+    """Starts background HTTP server for optional web streaming."""
     server = ThreadedHTTPServer(('0.0.0.0', port), MJPEGStreamHandler)
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
-    logger.info(f"🌐 Live Web Stream server running at: http://<RPi5_IP>:{port}/")
     return server
 
 
@@ -111,7 +110,7 @@ def generate_synthetic_frame(width=640, height=480, frame_count=0):
     cy = int(height / 2 + 100 * np.sin(frame_count * 0.05))
     
     cv2.circle(frame, (cx, cy), 40, (0, 255, 255), -1)
-    cv2.putText(frame, "RPi 5 Pure ONNX Test Stream", (20, 40),
+    cv2.putText(frame, "RPi 5 Live Camera Feed", (20, 40),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
     return frame
 
@@ -146,9 +145,9 @@ def build_frame_json_payload(frame_id, detections, fps, telemetry_manager, devic
             "cpu_usage_pct": cpu_usage,
             "ram_usage_pct": ram_usage,
             "fc_connected": gps_data["fc_connected"],
-            "latitude": gps_data["latitude"],     # None -> rendered as null in JSON when disconnected
-            "longitude": gps_data["longitude"],   # None -> rendered as null in JSON when disconnected
-            "altitude_m": gps_data["altitude_m"]  # None -> rendered as null in JSON when disconnected
+            "latitude": gps_data["latitude"],
+            "longitude": gps_data["longitude"],
+            "altitude_m": gps_data["altitude_m"]
         },
         "total_detections": len(formatted_detections),
         "detections": formatted_detections
@@ -160,19 +159,19 @@ def build_frame_json_payload(frame_id, detections, fps, telemetry_manager, devic
 def main():
     global latest_encoded_frame
 
-    parser = argparse.ArgumentParser(description="Raspberry Pi 5 Pure ONNX USB Camera Detection with Live Web Streaming")
-    parser.add_argument("--model", type=str, default="models/best.onnx", help="Path to ONNX (.onnx) model file")
+    parser = argparse.ArgumentParser(description="Raspberry Pi 5 Object Detection Live Display")
+    parser.add_argument("--model", type=str, default="models/best.onnx", help="Path to ONNX model file")
     parser.add_argument("--classes", type=str, default="models/classes.json", help="Path to classes.json file")
-    parser.add_argument("--source", type=str, default="0", help="Video source: USB camera index (0), file path, or 'synthetic'")
+    parser.add_argument("--source", type=str, default="0", help="Video source: USB camera index (0), video file path, or 'synthetic'")
     parser.add_argument("--conf", type=float, default=0.4, help="Confidence threshold (0.0 - 1.0)")
     parser.add_argument("--device-id", type=str, default="rpi5-camera-01", help="Device identifier string")
-    parser.add_argument("--fc-port", type=str, default="", help="Flight Controller serial/MAVLink port (e.g. /dev/ttyACM0)")
-    parser.add_argument("--json-output", type=str, default="output/detections.jsonl", help="File path to save JSON lines output")
+    parser.add_argument("--fc-port", type=str, default="", help="Flight Controller serial/MAVLink port")
+    parser.add_argument("--json-output", type=str, default="output/detections.jsonl", help="File path to save JSON output")
     parser.add_argument("--save-snapshots", action="store_true", help="Save annotated snapshot images whenever objects are detected")
-    parser.add_argument("--webstream", action="store_true", default=True, help="Enable live web browser stream at http://<RPi_IP>:8080")
-    parser.add_argument("--port", type=int, default=8080, help="Port for live web stream server")
+    parser.add_argument("--webstream", action="store_true", help="Enable optional background web stream")
+    parser.add_argument("--port", type=int, default=8080, help="Port for web stream server")
     parser.add_argument("--print-json", action="store_true", help="Print JSON detection payload to console")
-    parser.add_argument("--no-show", action="store_true", help="Disable GUI desktop window display")
+    parser.add_argument("--no-show", action="store_true", help="Disable desktop video window")
     args = parser.parse_args()
 
     # Ensure output directories exist
@@ -183,7 +182,7 @@ def main():
     if args.save_snapshots:
         os.makedirs(snapshot_dir, exist_ok=True)
 
-    # Initialize Telemetry Manager for Flight Controller / GPS
+    # Initialize Telemetry Manager
     telemetry_manager = TelemetryManager(connection_str=args.fc_port if args.fc_port else None)
 
     # Initialize Pure ONNX Engine
@@ -193,7 +192,7 @@ def main():
         conf_thres=args.conf
     )
 
-    # Start live HTTP Web Stream server
+    # Optional background web stream
     if args.webstream:
         start_mjpeg_webserver(port=args.port)
 
@@ -203,18 +202,29 @@ def main():
 
     if not use_synthetic:
         source_val = int(args.source) if args.source.isdigit() else args.source
-        logger.info(f"Opening USB Camera / Video source: {source_val}")
+        logger.info(f"Opening video camera source: {source_val}")
         cap = cv2.VideoCapture(source_val)
 
         if not cap.isOpened():
             logger.warning(f"Unable to open camera source '{args.source}'. Falling back to synthetic test stream.")
             use_synthetic = True
 
+    # Initialize desktop display window if GUI active
+    window_name = "Raspberry Pi 5 Object Detection Feed"
+    show_window = not args.no_show
+    if show_window:
+        try:
+            cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+            cv2.resizeWindow(window_name, 800, 600)
+            logger.info("📺 Live video display window opened!")
+        except Exception as e:
+            logger.warning(f"Could not open desktop GUI window (running headless?): {e}")
+            show_window = False
+
     frame_count = 0
     fps = 0.0
 
-    logger.info("Starting Pure ONNX detection loop. Press Ctrl+C or 'q' to stop.")
-
+    logger.info("Starting detection loop. Press 'q' or Ctrl+C to exit.")
     json_file = open(args.json_output, "a") if args.json_output else None
 
     try:
@@ -237,11 +247,13 @@ def main():
             loop_time = time.time() - loop_start
             fps = 0.9 * fps + 0.1 * (1.0 / loop_time if loop_time > 0 else 30.0)
 
-            # Draw overlay metrics
-            cv2.putText(annotated_frame, f"RPi5 FPS: {fps:.1f}", (10, 30),
+            # Draw status overlay
+            cv2.putText(annotated_frame, f"FPS: {fps:.1f}", (10, 30),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+            cv2.putText(annotated_frame, f"Objects: {len(detections)}", (10, 60),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
 
-            # Update webstream buffer
+            # Update webstream buffer if enabled
             if args.webstream:
                 ret_jpg, jpeg_buf = cv2.imencode('.jpg', annotated_frame)
                 if ret_jpg:
@@ -252,7 +264,6 @@ def main():
             if args.save_snapshots and len(detections) > 0 and frame_count % 10 == 0:
                 snap_path = os.path.join(snapshot_dir, f"det_frame_{frame_count:06d}.jpg")
                 cv2.imwrite(snap_path, annotated_frame)
-                logger.info(f"Saved detection snapshot: {snap_path}")
 
             # Build telemetry payload
             payload = build_frame_json_payload(
@@ -274,15 +285,13 @@ def main():
                 if args.print_json:
                     print(json.dumps(payload, indent=2))
 
-            # Desktop GUI window if monitor connected
-            if not args.no_show:
-                try:
-                    cv2.imshow("Raspberry Pi 5 Pure ONNX Detection", annotated_frame)
-                    if cv2.waitKey(1) & 0xFF == ord('q'):
-                        logger.info("Quit key ('q') pressed.")
-                        break
-                except cv2.error:
-                    pass
+            # Render live video frame directly on desktop screen
+            if show_window:
+                cv2.imshow(window_name, annotated_frame)
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord('q') or key == 27:  # 'q' or ESC key
+                    logger.info("Quit key pressed.")
+                    break
 
     except KeyboardInterrupt:
         logger.info("Interrupted by user.")
@@ -293,7 +302,7 @@ def main():
         if json_file is not None:
             json_file.close()
         cv2.destroyAllWindows()
-        logger.info(f"Cleaned up resources. Telemetry log saved to '{args.json_output}'")
+        logger.info(f"Cleaned up video windows and telemetry logs.")
 
 
 if __name__ == "__main__":
